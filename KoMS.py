@@ -32,7 +32,7 @@ mqtt_host_IP = "192.168.0.113"
 mqtt_topic_0 = "DHT22/1/TEMP"
 mqtt_topic_1 = "DHT22/1/HUMIDITY"
 mqtt_topic_2 = "DS18B20/28-0213169ea9aa/TEMP"
-mqtt_topic_3 = "DS18B20/28-01131e6cfec0/TEMP"
+mqtt_topic_3 = "DS18B20/28-0213139c46aa/TEMP"
 mqtt_topic_4 = "XC4604/1/MOISTURE"
 
 SERIAL_PATH = '/dev/serial0'
@@ -75,7 +75,6 @@ class DHT22:
                 method. Might need to segregate this to its own thread if it halts
                 the program from working.
                 """
-                logging.info("DHT22:		Sample begin")
                 self._humidity, self._temperature = Adafruit_DHT.read(
                         self._sensor,
                         DHT_TEMP_HUMIDITY_PIN_1
@@ -83,11 +82,8 @@ class DHT22:
 
 
                 if self._humidity is not None and self._temperature is not None:
-                        logging.info("DHT22:		Sample end - temperature(" \
-                        + self._temperature + "), humidity("  + self._humidity + ")")
-                        return (self._temperature, self._humidity, True, False)
+                        return (round(self._temperature, 2), round(self._humidity, 2), True, False)
                 else:
-                        logging.info("DHT22:		INVALID READING")
                         return (self._temperature, self._humidity, True, True)
 
 class DS18B20:
@@ -147,7 +143,7 @@ class DS18B20:
                 if self._equals_pos != -1:
                         self._temp_string = self._lines[1][self._equals_pos+2:]
                         self._temp_c = float(self._temp_string) / 1000.0
-                return self._temp_c
+                return round(self._temp_c, 2)
 
 class XC4604_Moisture:
         """
@@ -234,11 +230,10 @@ class MQTT:
                 topic
 
                 """
-                barrel_round = 0
-                for i in self._topic_list:
-                        self._client.publish(i, barrel[barrel_round], qos=0, retain=False)
-                        barrel_round += 1
 
+                for i in range(len(self._topic_list)):
+                        self._client.publish(self._topic_list[i], barrel[i], qos=0, retain=False)
+                       #  logging.info("Barrel round " + str(self._topic_list[i]) + ": " + str(barrel[i]))
 
                 logging.info("MQTT PUBLISHED")
 
@@ -291,10 +286,10 @@ class Monitor:
                                 self._moisture_1]
                 self._mqtt = MQTT(      mqtt_topic_0, mqtt_topic_1,
                                         mqtt_topic_2, mqtt_topic_3,
-                                        mqtt_topic_4) 
+                                        mqtt_topic_4)
                 self._DHT_switch = True
                 self._DHT_read_error = False
-                
+
                 self._Moisture_switch = True
 
 
@@ -320,7 +315,7 @@ class Monitor:
                                     (self._moisture_1,
                                     self._Moisture_switch) = self._XC4604_1.get_moisture()
                                 else:
-                                    logging.info("XC4604:		NO TEMP READING")
+                                    logging.info("XC4604:		NO MOISTURE READING")
 
                         self._DS18B20_temp_1 = self._DS18B20_1.read_temp()
                         self._DS18B20_temp_2 = self._DS18B20_2.read_temp()
@@ -330,7 +325,9 @@ class Monitor:
                                 + " - DS18B20_2(" + str(self._DS18B20_temp_2)  +")"\
                                 + " - XC4604("+ str(self._moisture_1)  +")")
                         time.sleep(1)
-                        self._mqtt.publish_package(self._barrel)
+                        self._mqtt.publish_package([self._DHT_temp, self._DHT_humidity,
+                                                    self._DS18B20_temp_1, self._DS18B20_temp_2,
+                                                    self._moisture_1])
 
 
 def main() -> None:
