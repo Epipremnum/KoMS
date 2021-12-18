@@ -1,4 +1,5 @@
 
+
 import os
 import time
 import struct
@@ -12,9 +13,27 @@ from glob import glob
 import Adafruit_DHT
 import paho.mqtt.client as mqtt
 import paho.mqtt.publish as publish
+import RPi.GPIO as GPIO
 
 
 DHT_TEMP_HUMIDITY_PIN_1 = 12
+
+WATCHDOG_PIN = 18
+WATCHDOG_INTERVAL = 5
+
+TARGET_TEMP_1 = 27
+TARGET_TEMP_2 = 27
+HYSTERISIS = 1
+
+RELAY_CONTROL_PIN_1 = 27
+RELAY_CONTROL_PIN_2 = 22
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(RELAY_CONTROL_PIN_1, GPIO.OUT)
+GPIO.setup(RELAY_CONTROL_PIN_2, GPIO.OUT)
+GPIO.setup(WATCHDOG_PIN, GPIO.OUT)
+GPIO.output(RELAY_CONTROL_PIN_1, 0)
+GPIO.output(RELAY_CONTROL_PIN_2, 0)
+GPIO.output(WATCHDOG_PIN, 0)
 
 
 """
@@ -26,7 +45,7 @@ TEMP_SENSOR_ADDY_2 = '28-0213139c46aa'
 TEMP_SENSOR_ADDY_3 = '28-01131e6cfec0'
 READ_RETRY_MAX = 5
 
-log = logging.getLogger("KoMS Logger")
+
 current_time = datetime.now()
 
 mqtt_host_IP = "192.168.0.113"
@@ -36,13 +55,15 @@ mqtt_topic_2 = "DS18B20/28-0213169ea9aa/TEMP"
 mqtt_topic_3 = "DS18B20/28-0213139c46aa/TEMP"
 mqtt_topic_4 = "XC4604/1/MOISTURE"
 mqtt_topic_5 = "datetime"
+mqtt_topic_6 = "heat/1"
+mqtt_topic_7 = "heat/2"
 
 SERIAL_PATH = '/dev/serial0'
 SERIAL_BAUD = 9600
 SERIAL_PARITY = serial.PARITY_NONE
 SERIAL_STOPBITS = serial.STOPBITS_ONE
 SERIAL_BYTESIZE = serial.EIGHTBITS
-SERIAL_TIMEOUT = 45
+SERIAL_TIMEOUT = 2
 """The data from the moisture sensor is sent every 30 seconds.
    If it isn't sent in 45,
    then something is wrong """
@@ -94,17 +115,6 @@ class DS18B20:
                         lines (str): The raw output of the sensor reading
 
                 """
-                logging.info(" ")
-#                logging.info("self._read_retry:		" + str(self._read_retry) + "		"  + self._sensor_name)
-#                logging.info("Entering retry counter: " + str(retry_counter) + " "  + self._sensor_name)
-
-                if self._sensor_name == "Bottles":
-#                        logging.info("reestablish_switch 1:		" + str(self._reestablish_switch_1) + "		"  + self._sensor_name)
-#                        logging.info("x_1 is alive:			" + str(self._x_1.is_alive()) + "		"  + self._sensor_name)
-                else:
-#                        logging.info("reestablish_switch 2:		" + str(self._reestablish_switch_2) + "		"  + self._sensor_name)
-#                        logging.info("x_2 is alive:			" + str(self._x_2.is_alive()) + "		"  + self._sensor_name)
-                logging.info(" ")
 
                 if self._reestablish_switch_1 == True:
                         if self._read_retry == 0:
@@ -126,13 +136,13 @@ class DS18B20:
                                 return self._lines
                         except OSError:
                                 self._read_retry = 1
-                                logging.info("CAUTION:		DS18B20(" + self._sensor_id + ") BAD READ")
+                                logging.warning("WARNING:		DS18B20(" + self._sensor_id + ") BAD READ")
 
 
                 if retry_counter == 1:
                         if self._sensor_name == "Bottles":
                                 if self._reestablish_switch_1 == False:
-                                        logging.info("----------  X_1 Start  ---------- ")
+                                        logging.info("--------------------  X_1 Thread Start  -------------------- ")
                                         self._reestablish_switch_1 = True
                                         self._x_1.start()
 
@@ -140,7 +150,7 @@ class DS18B20:
 
                         elif self._sensor_name == "Brew Jar":
                                 if self._reestablish_switch_2 == False:
-                                        logging.info("----------  X_2 Start  ----------")
+                                        logging.info("--------------------  X_2 Thread Start  --------------------")
                                         self._reestablish_switch_2 = True
                                         self._x_2.start()
 
@@ -185,15 +195,14 @@ class DS18B20:
                         logging.info("----- Attempting to repair DS18B20(" + self._sensor_id + ") -----")
                         while 1:
                                 time.sleep(5)
-#                                logging.info("Establish Cycle")
                                 try:
                                         f = open(self._device, 'r')
                                         self._lines = f.readlines()
                                         f.close()
 
-                                except OSError:
+                                except OSError as e:
                                         time.sleep(10)
-                                        # logging.info("OS ERROR READ DS18B20")
+                                        logging.warning("OS ERROR READ DS18B20: {}".format(e))
                                 try:
                                         if self._lines[0].strip()[-3:] == 'YES':
                                                 self._equals_pos = self._lines[1].find('t=')
@@ -202,14 +211,14 @@ class DS18B20:
                                                         self._temp_c = float(self._temp_string) / 1000.0
                                                         break
                                 except TypeError as e:
-                                        #logging.info("OS ERROR LINE PARSE: " + str(e))
+                                        logging.warning("OS ERROR LINE PARSE: {}".format(e))
                                         pass
 
 
                 self._x_1 = threading.Thread(target=self.establish_DS18B20_1)
                 self._x_1.daemon = True
                 self._read_retry = 0
-                logging.info("----- DS18B20(" + self.sensor_id + ") Connection reestablished -----")
+                logging.info("----- DS18B20(" + self._sensor_id + ") Connection established -----")
                 return None
 
         def establish_DS18B20_2(self):
@@ -224,15 +233,15 @@ class DS18B20:
                         logging.info("----- Attempting to repair DS18B20(" + self._sensor_id + ") -----")
                         while 1:
                                 time.sleep(5)
- #                               logging.info("Establish Cycle 2")
+
                                 try:
                                         f = open(self._device, 'r')
                                         self._lines = f.readlines()
                                         f.close()
 
-                                except OSError:
+                                except OSError as e:
                                         time.sleep(10)
-                                        # logging.info("OS ERROR READ DS18B20")
+                                        logging.info("OS ERROR READ DS18B20: {}".format(e))
                                 try:
                                         if self._lines[0].strip()[-3:] == 'YES':
                                                 self._equals_pos = self._lines[1].find('t=')
@@ -241,13 +250,13 @@ class DS18B20:
                                                         self._temp_c = float(self._temp_string) / 1000.0
                                                         break
                                 except TypeError as e:
-                                        #logging.info("OS ERROR LINE PARSE: " + str(e))
+                                        logging.warning("OS ERROR LINE PARSE: {}".format(e))
                                         pass
 
                 self._x_2 = threading.Thread(target=self.establish_DS18B20_2)
                 self._x_2.daemon = True
                 self._read_retry = 0
-                logging.info("----- DS18B20(" + self.sensor_id + ") Connection reestablished -----")
+                logging.info("----- DS18B20(" + self._sensor_id + ") Connection established -----")
                 return None
 
 class Serial_sensors:
@@ -288,12 +297,31 @@ class Serial_sensors:
         def serial_available(self):
                 return self._ser_obj.inWaiting()
 
-
         def get_serial_string(self):
                 self._data_received = self._ser_obj.read_until()
-                self._temperature = float(self._data_received[0:5])
-                self._humidity = float(self._data_received[6:11])
-                self._moisture = float(self._data_received[12:-1])
+#                logging.info("RAW SERIAL: " + str(self._data_received))
+                self._ser_obj.reset_input_buffer()
+                try:
+#                        print(str(self._data_received[0:5]))
+                        self._temperature = float(self._data_received[0:5])
+#                        logging.info("get_Serial_string self._temperature: {}".format(str(self._temperature)))
+                except Exception as e:
+                        logging.warning("self._temperature in Serial_Sensors:{} ".format(str(e)))
+                        self._temperature = 41.41
+                try:
+#                        print(str(self._data_received[6:11]))
+                        self._humidity = float(self._data_received[6:11])
+#                        logging.info("get_Serial_string self._humidity: {}".format(str(self._humidity)))
+                except Exception as e:
+                        logging.warning("self._humidity in Serial_Sensors: {}".format(str(e)))
+                        self._humidity = -41.41
+                try:
+#                        print(str(self._data_received[12:-1]))
+                        self._moisture = float(self._data_received[12:-1])
+#                        logging.info("get_Serial_string self._moisture: {}".format(str(self._moisture)))
+                except Exception as e:
+                        logging.warning("self._moisture in Serial_Sensors: {}".format(str(e)))
+                        self._moisture = 4141
                 return None
 
 
@@ -325,7 +353,10 @@ class MQTT:
                                 mqtt_topic_2,
                                 mqtt_topic_3,
                                 mqtt_topic_4,
-                                mqtt_topic_5 ):
+                                mqtt_topic_5,
+                                mqtt_topic_6,
+                                mqtt_topic_7,
+                                logger):
                 """
                 The constructor of the MQTT communication.
 
@@ -333,11 +364,13 @@ class MQTT:
                         mqtt_topic[0:n]: The topic name to be published to
 
                 """
-                self._client = mqtt.Client("Brew Komputer")
-                self._client.enable_logger(log)
+                self._client = mqtt.Client()
+                self._log = logger
+                self._client.enable_logger(self._log)
 
                 self._client.on_connect = self.on_connect
                 self._client.on_disconnect = self.on_disconnect
+                self._client.on_log = self.on_log
 
                 self._client.connect(mqtt_host_IP, port=1883, keepalive=60)
 
@@ -349,13 +382,20 @@ class MQTT:
                 self._topic_3 = mqtt_topic_3
                 self._topic_4 = mqtt_topic_4
                 self._topic_5 = mqtt_topic_5
+                self._topic_6 = mqtt_topic_6
+                self._topic_7 = mqtt_topic_7
                 self._topic_list = [    mqtt_topic_0,
                                         mqtt_topic_1,
                                         mqtt_topic_2,
                                         mqtt_topic_3,
                                         mqtt_topic_4,
-                                        mqtt_topic_5 ]
+                                        mqtt_topic_5,
+                                        mqtt_topic_6,
+                                        mqtt_topic_7 ]
                 self._client.loop_start()
+
+        def on_log(client, userdata, level, buf):
+                print("MQTT LOG: ",buf)
 
         def publish_package(self, barrel):
                 """
@@ -387,7 +427,104 @@ class MQTT:
 
                 """
                 logging.info("Unexpected disconnection: " +str(rc))
+                logging.info("Disconn reason: {}".format(mqtt.error_string(rc)))
 
+class temperature_control:
+        """
+        This class is responsible for the temperature regulation and relay control
+        """
+        def __init__(self, target_temp_1, target_temp_2, hysterisis, thermo_object_1, thermo_object_2):
+                """
+                The constructor for the temperature regulation. Initialise the
+                target temperature and hysterisis.
+                """
+                self._target_temp_1 = target_temp_1
+                self._target_temp_2 = target_temp_2
+                self._hysterisis = hysterisis
+                self._DS18B20_1 = thermo_object_1
+                self._DS18B20_2 = thermo_object_2
+                self._thread = threading.Thread(target=self.temp_control_loop)
+                self._thread.daemon = True
+                self._regulation_switch = True
+                self._temp_1 = 100
+                self._temp_2 = 100
+                self._heat_on_1 = 0
+                self._heat_on_2 = 0
+
+
+        def temp_control_loop(self):
+                logging.info("Temperature Regulation on")
+                while self._regulation_switch == True:
+#                        logging.info("IN REGULATION LOOP, 1: {} 2: {}".format(self._temp_1, self._temp_2))
+                        self._temp_1 = self._DS18B20_1.read_temp()
+                        self._temp_2 = self._DS18B20_2.read_temp()
+                        if (self._temp_1 <= (self._target_temp_1 - self._hysterisis)):
+                                GPIO.output(RELAY_CONTROL_PIN_1, 1)
+                                self._heat_on_1 = 1
+                        elif (self._temp_1 > (self._target_temp_1 + self._hysterisis)):
+                                GPIO.output(RELAY_CONTROL_PIN_1, 0)
+                                self._heat_on_1 = 0
+
+                        if (self._temp_2 <= (self._target_temp_2 - self._hysterisis)):
+                                GPIO.output(RELAY_CONTROL_PIN_2, 1)
+                                self._heat_on_2 = 1
+                        elif (self._temp_2 > (self._target_temp_2 + self._hysterisis)):
+                                GPIO.output(RELAY_CONTROL_PIN_2, 0)
+                                self._heat_on_2 = 0
+                        time.sleep(3)
+
+        def get_heat_status(self):
+                return (self._heat_on_1, self._heat_on_2)
+
+        def set_temps(self, temp1, temp2):
+                self._temp_1 = temp1
+                self._temp_2 = temp2
+
+        def start(self):
+                self._thread.start()
+
+        def stop(self):
+                logging.info("TEMPERATURE REGULATION:		END")
+                self._regulation_switch = False
+                self._thread.join()
+
+
+class watchdog:
+        """
+        This class handles watchdog signals to make sure we arent stuck in a loop.
+        It's not threaded as the rest of the program could hang and this would still spin
+        in a loop.
+        """
+
+        def __init__(self):
+                """
+                Constructor for the watchdog module. Initial time needs to be taken to begin
+                the loop
+                """
+                self._timer_started = False
+                self._thread = threading.Thread(target=self.pulse)
+                self._thread.daemon = True
+
+
+
+        def pulse(self):
+                """
+                Send the GPIO pulse to reset the watchdog timer. How accurate?
+                """
+                GPIO.output(WATCHDOG_PIN, 1)
+                time.sleep(0.02)
+                GPIO.output(WATCHDOG_PIN, 0)
+                time.sleep(WATCHDOG_INTERVAL)
+                self._timer_started = False
+                self._thread = threading.Thread(target=self.pulse)
+                self._thread.daemon = True
+
+
+
+        def start(self):
+                if self._timer_started == False:
+                        self._timer_started = True
+                        self._thread.start()
 
 
 class Monitor:
@@ -409,6 +546,9 @@ class Monitor:
                 self._DS18B20_1 = DS18B20(TEMP_SENSOR_ADDY_1, "Bottles")
                 self._DS18B20_2 = DS18B20(TEMP_SENSOR_ADDY_2, "Brew Jar")
                 self._Serial_sensors = Serial_sensors()
+                self._temp_control = temperature_control(TARGET_TEMP_1, TARGET_TEMP_2, HYSTERISIS, self._DS18B20_1, self._DS18B20_2)
+                self._watchdog = watchdog()
+
                 self._DHT_temp = 0
                 self._DHT_humidity = 0
                 self._DS18B20_temp_1 = 0
@@ -416,15 +556,25 @@ class Monitor:
                 self._moisture_1 = 0
                 self._dt = datetime.now()
                 self._date_time = self._dt.strftime("%b-%d-%y %H:%M:%S")
+                self._heat_on_1 = 0
+                self._heat_on_2 = 0
                 self._barrel = [self._DHT_temp,
                                 self._DHT_humidity,
                                 self._DS18B20_temp_1,
                                 self._DS18B20_temp_2,
                                 self._moisture_1,
-                                self._date_time]
+                                self._date_time,
+                                self._heat_on_1,
+                                self._heat_on_2]
+                self._log = logging.getLogger("KoMS Logger")
                 self._mqtt = MQTT(      mqtt_topic_0, mqtt_topic_1,
                                         mqtt_topic_2, mqtt_topic_3,
-                                        mqtt_topic_4, mqtt_topic_5)
+                                        mqtt_topic_4, mqtt_topic_5,
+                                        mqtt_topic_6, mqtt_topic_7,
+                                        self._log)
+                self._temp_control.start()
+                logging.info("End of monitor setup")
+
 
         def mainloop(self):
                 """
@@ -433,26 +583,36 @@ class Monitor:
                 MQTT.
 
                 """
+                logging.info("Start of monitor mainloop")
                 while 1:
+                        self._watchdog.start()
+#                        logging.info("Watchdog started")
                         self._Serial_sensors.get_serial_string()
+#                        logging.info("Serial string gotten")
                         self._DHT_temp = self._Serial_sensors.get_temperature()
                         self._DHT_humidity = self._Serial_sensors.get_humidity()
+#                        logging.info("DHT Temp and humidity retrieved")
+#                        print(str(self._Serial_sensors.serial_available()))
                         self._moisture_1 = self._Serial_sensors.get_moisture()
                         self._dt = datetime.now()
                         self._date_time = self._dt.strftime("%b-%d-%y %H:%M:%S")
                         self._DS18B20_temp_1 = self._DS18B20_1.read_temp()
                         self._DS18B20_temp_2 = self._DS18B20_2.read_temp()
+                        self._heat_on_1, self._heat_on_2 = self._temp_control.get_heat_status()
+#                        self._temp_control.set_temps(self._DS18B20_temp_1, self._DS18B20_temp_2)
                         logging.info(str(self._date_time) + ":" \
                                 + " - DHT temp(" + str(self._DHT_temp) + ")" \
                                 + " - DHT humi(" + str(self._DHT_humidity)  + ")" \
                                 + " - DS18B20_1(" + str(self._DS18B20_temp_1)  + ")" \
                                 + " - DS18B20_2(" + str(self._DS18B20_temp_2)  +")"\
-                                + " - XC4604("+ str(self._moisture_1)  +")" )
-
+                                + " - XC4604("+ str(self._moisture_1)  +")" \
+                                + " - Heat_1(" + str(self._heat_on_1) + ")" \
+                                + " - Heat_2(" + str(self._heat_on_2) + ")" )
                         self._mqtt.publish_package([self._DHT_temp, self._DHT_humidity,
                                                     self._DS18B20_temp_1, self._DS18B20_temp_2,
-                                                    self._moisture_1, self._date_time])
-                        time.sleep(1)
+                                                    self._moisture_1, self._date_time,
+                                                    self._heat_on_1, self._heat_on_2])
+                        time.sleep(3)
 
 
 def main() -> None:
@@ -460,9 +620,15 @@ def main() -> None:
         Entry point to KoMS system.
 
         """
-        format = "INFO : %(message)s"
-        logging.basicConfig(format=format, level=logging.INFO)
-                        #datefmt="%b-%d-%y %H:%M:%S")
+        logging.basicConfig(
+                filename="/home/pi/koms.log",
+                level=logging.INFO,
+                format='%(asctime)s || LEVEL: %(levelname)s:	%(message)s',
+                datefmt='%Y-%m-%d | %H:%M:%S',
+)
+
+
+
         logging.info("~~~~~~     KoMS system startup     ~~~~~")
 
         monitoring = Monitor()
@@ -470,4 +636,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+        try:
+                main()
+        except KeyboardInterrupt:
+                print("\nKeyboard Interrupt")
+        except Exception as e:
+                print("\n\nAN ERORR OCCURED")
+                logging.error("FATAL ERROR - " + str(e))
+        finally:
+                GPIO.cleanup()
